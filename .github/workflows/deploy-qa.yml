@@ -1,0 +1,190 @@
+name: Deploy to QA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source repo branch/tag/SHA to build from"
+        required: false
+        default: "main"
+  schedule:
+    - cron: '0 6 * * *'
+
+env:
+  SSH_OPTS: "-o StrictHostKeyChecking=no -i /tmp/ec2_key.pem"
+
+jobs:
+  verify-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── Step 0: Validate secrets ──────────────────────────────────────
+      - name: Validate required secrets
+        run: |
+          MISSING=""
+          for SECRET_NAME in \
+            AWS_ACCESS_KEY_ID \
+            AWS_SECRET_ACCESS_KEY \
+            AWS_SESSION_TOKEN \
+            AWS_REGION \
+            AWS_ACCOUNT_ID \
+            QA_EC2_HOST \
+            EC2_SSH_KEY \
+            EC2_SSH_USER \
+            EC2_SECURITY_GROUP_ID \
+            EC2_SUBNET_ID \
+            EC2_AMI_ID \
+            EC2_KEY_PAIR_NAME \
+            SOURCE_REPO \
+            SOURCE_REPO_PAT; do
+            eval VALUE="\$$SECRET_NAME"
+            if [ -z "$VALUE" ]; then
+              MISSING="$MISSING $SECRET_NAME"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required secrets:$MISSING"
+            exit 1
+          fi
+          echo "All required secrets are present."
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          QA_EC2_HOST: ${{ secrets.QA_EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_USER: ${{ secrets.EC2_SSH_USER }}
+          EC2_SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+          EC2_SUBNET_ID: ${{ secrets.EC2_SUBNET_ID }}
+          EC2_AMI_ID: ${{ secrets.EC2_AMI_ID }}
+          EC2_KEY_PAIR_NAME: ${{ secrets.EC2_KEY_PAIR_NAME }}
+          SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+
+      # ── Step 1: Checkout infra repo ───────────────────────────────────
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+
+      # ── Step 2: Configure AWS credentials ─────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ── Step 3: Write SSH key to file ─────────────────────────────────
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ec2_key.pem
+          chmod 600 /tmp/ec2_key.pem
+
+      # ── Step 4: Launch temp EC2 ──────────────────────────────────────
+      - name: Launch temp EC2
+        id: launch-ec2
+        run: |
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id ${{ secrets.EC2_AMI_ID }} \
+            --instance-type t2.small \
+            --key-name ${{ secrets.EC2_KEY_PAIR_NAME }} \
+            --security-group-ids ${{ secrets.EC2_SECURITY_GROUP_ID }} \
+            --subnet-id ${{ secrets.EC2_SUBNET_ID }} \
+            --user-data file://deploy/user-data.sh \
+            --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=budget-app-temp-verify}]' \
+            --associate-public-ip-address \
+            --query 'Instances[0].InstanceId' --output text)
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "Instance launched: $INSTANCE_ID"
+
+      # ── Step 5: Wait for instance running + get IP ───────────────────
+      - name: Wait for instance running and get IP
+        id: get-ip
+        run: |
+          INSTANCE_ID="${{ steps.launch-ec2.outputs.INSTANCE_ID }}"
+          echo "Waiting for instance $INSTANCE_ID to be running..."
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          TEMP_EC2_IP=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+          echo "TEMP_EC2_IP=$TEMP_EC2_IP" >> "$GITHUB_OUTPUT"
+          echo "Instance running at: $TEMP_EC2_IP"
+
+      # ── Step 6: Wait for SSH + Docker ready ──────────────────────────
+      - name: Wait for SSH and Docker ready
+        run: |
+          TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
+          echo "Waiting for SSH + Docker on $TEMP_EC2_IP..."
+          for i in $(seq 1 40); do
+            if ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" "docker --version" 2>/dev/null; then
+              echo "SSH and Docker ready after attempt $i"
+              exit 0
+            fi
+            echo "Attempt $i/40 — retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::Timed out waiting for SSH + Docker on temp EC2"
+          exit 1
+
+      # ── Step 7: Clone source repo on temp EC2 ─────────────────────────
+      - name: Clone source repo on temp EC2
+        run: |
+          TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
+          SOURCE_REF="${{ github.event.inputs.source_ref || 'main' }}"
+          echo "Cloning source repo (ref: $SOURCE_REF) on $TEMP_EC2_IP..."
+          ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
+            "git clone https://${{ secrets.SOURCE_REPO_PAT }}@github.com/${{ secrets.SOURCE_REPO }}.git app && cd app && git checkout $SOURCE_REF"
+
+      # ── Step 8: Build and start app on temp EC2 ───────────────────────
+      - name: Build and start app on temp EC2
+        run: |
+          TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
+          echo "Building and starting app on $TEMP_EC2_IP..."
+          ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
+            "cd app && docker compose up -d --build"
+
+      # ── Step 9: Wait for app startup ──────────────────────────────────
+      - name: Wait for app startup
+        run: |
+          TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
+          echo "Waiting for containers to be ready..."
+          for i in $(seq 1 12); do
+            RUNNING=$(ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
+              "cd app && docker compose ps --format json" 2>/dev/null | grep -c '"running"' || true)
+            echo "Attempt $i/12 — $RUNNING container(s) running"
+            if [ "$RUNNING" -ge 2 ]; then
+              echo "App containers are up."
+              exit 0
+            fi
+            sleep 10
+          done
+          ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
+            "cd app && docker compose ps && docker compose logs --tail=50"
+          echo "::error::Containers did not reach running state in time"
+          exit 1
+
+      # ── Step 10: Smoke test temp EC2 ──────────────────────────────────
+      - name: Smoke test temp EC2
+        run: |
+          TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
+          chmod +x deploy/smoke-test.sh
+          ./deploy/smoke-test.sh "http://$TEMP_EC2_IP:5173"
+
+      # ── Step 19: Terminate temp EC2 (always) ─────────────────────────
+      - name: Terminate temp EC2
+        if: always()
+        run: |
+          INSTANCE_ID="${{ steps.launch-ec2.outputs.INSTANCE_ID }}"
+          if [ -n "$INSTANCE_ID" ]; then
+            echo "Terminating instance $INSTANCE_ID..."
+            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+            echo "Terminate request sent."
+          else
+            echo "No instance to terminate."
+          fi
