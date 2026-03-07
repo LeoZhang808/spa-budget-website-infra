@@ -6,10 +6,10 @@ echo "=== user-data bootstrap started at $(date) ==="
 # Trap to log failure point (helps debug when cloud-init reports scripts-user failed)
 trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
 
-# Install dependencies first (AL2023 minimal has curl-minimal, but we need docker, git, and full curl)
+# Install dependencies (AL2023 minimal already has curl-minimal; curl and curl-minimal conflict)
 # This also validates network - dnf will fail clearly if no internet
-echo "Installing docker, git, curl..."
-dnf install -y docker git curl
+echo "Installing docker, git..."
+dnf install -y docker git
 
 # Verify GitHub reachability (needed for git clone in deploy workflow)
 echo "Checking GitHub reachability..."
