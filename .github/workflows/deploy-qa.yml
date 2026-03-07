@@ -167,14 +167,14 @@ jobs:
           chmod +x deploy/smoke-test.sh
           ./deploy/smoke-test.sh "http://$TEMP_EC2_IP:5173"
 
-      - name: Terminate temp EC2
-        if: always()
-        run: |
-          INSTANCE_ID="${{ steps.launch-ec2.outputs.INSTANCE_ID }}"
-          if [ -n "$INSTANCE_ID" ]; then
-            echo "Terminating instance $INSTANCE_ID..."
-            aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
-            echo "Terminate request sent."
-          else
-            echo "No instance to terminate."
-          fi
+      # - name: Terminate temp EC2
+      #   if: always()
+      #   run: |
+      #     INSTANCE_ID="${{ steps.launch-ec2.outputs.INSTANCE_ID }}"
+      #     if [ -n "$INSTANCE_ID" ]; then
+      #       echo "Terminating instance $INSTANCE_ID..."
+      #       aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+      #       echo "Terminate request sent."
+      #     else
+      #       echo "No instance to terminate."
+      #     fi
