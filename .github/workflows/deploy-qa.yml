@@ -110,20 +110,21 @@ jobs:
           echo "TEMP_EC2_IP=$TEMP_EC2_IP" >> "$GITHUB_OUTPUT"
           echo "Instance running at: $TEMP_EC2_IP"
 
-      # ── Step 6: Wait for SSH + Docker ready ──────────────────────────
+      # ── Step 6: Wait for SSH + user-data complete + Docker ready ───────
       - name: Wait for SSH and Docker ready
         run: |
           TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
-          echo "Waiting for SSH + Docker on $TEMP_EC2_IP..."
+          echo "Waiting for SSH + user-data + Docker Compose on $TEMP_EC2_IP..."
           for i in $(seq 1 40); do
-            if ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" "docker --version" 2>/dev/null; then
-              echo "SSH and Docker ready after attempt $i"
+            if ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
+              "test -f /tmp/user-data-complete && docker compose version" 2>/dev/null; then
+              echo "SSH and Docker Compose ready after attempt $i"
               exit 0
             fi
             echo "Attempt $i/40 — retrying in 15s..."
             sleep 15
           done
-          echo "::error::Timed out waiting for SSH + Docker on temp EC2"
+          echo "::error::Timed out waiting for SSH + Docker Compose on temp EC2"
           exit 1
 
       - name: Clone source repo on temp EC2
