@@ -1,2 +1,6 @@
 .cursor/
 .specify/
+
+.env.qa.example
+specs/
+
