@@ -38,8 +38,7 @@ jobs:
             EC2_SUBNET_ID \
             EC2_AMI_ID \
             EC2_KEY_PAIR_NAME \
-            SOURCE_REPO \
-            SOURCE_REPO_PAT; do
+            SOURCE_REPO; do
             eval VALUE="\$$SECRET_NAME"
             if [ -z "$VALUE" ]; then
               MISSING="$MISSING $SECRET_NAME"
@@ -55,8 +54,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           QA_EC2_HOST: ${{ secrets.QA_EC2_HOST }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
           EC2_SSH_USER: ${{ secrets.EC2_SSH_USER }}
           EC2_SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
@@ -64,13 +63,10 @@ jobs:
           EC2_AMI_ID: ${{ secrets.EC2_AMI_ID }}
           EC2_KEY_PAIR_NAME: ${{ secrets.EC2_KEY_PAIR_NAME }}
           SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
-          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
 
-      # ── Step 1: Checkout infra repo ───────────────────────────────────
       - name: Checkout infra repo
         uses: actions/checkout@v4
 
-      # ── Step 2: Configure AWS credentials ─────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -79,13 +75,11 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # ── Step 3: Write SSH key to file ─────────────────────────────────
       - name: Write SSH key
         run: |
           echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ec2_key.pem
           chmod 600 /tmp/ec2_key.pem
 
-      # ── Step 4: Launch temp EC2 ──────────────────────────────────────
       - name: Launch temp EC2
         id: launch-ec2
         run: |
@@ -132,16 +126,14 @@ jobs:
           echo "::error::Timed out waiting for SSH + Docker on temp EC2"
           exit 1
 
-      # ── Step 7: Clone source repo on temp EC2 ─────────────────────────
       - name: Clone source repo on temp EC2
         run: |
           TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
           SOURCE_REF="${{ github.event.inputs.source_ref || 'main' }}"
           echo "Cloning source repo (ref: $SOURCE_REF) on $TEMP_EC2_IP..."
           ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
-            "git clone https://${{ secrets.SOURCE_REPO_PAT }}@github.com/${{ secrets.SOURCE_REPO }}.git app && cd app && git checkout $SOURCE_REF"
+            "git clone https://github.com/${{ secrets.SOURCE_REPO }}.git app && cd app && git checkout $SOURCE_REF"
 
-      # ── Step 8: Build and start app on temp EC2 ───────────────────────
       - name: Build and start app on temp EC2
         run: |
           TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
@@ -149,7 +141,6 @@ jobs:
           ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@"$TEMP_EC2_IP" \
             "cd app && docker compose up -d --build"
 
-      # ── Step 9: Wait for app startup ──────────────────────────────────
       - name: Wait for app startup
         run: |
           TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
@@ -169,14 +160,12 @@ jobs:
           echo "::error::Containers did not reach running state in time"
           exit 1
 
-      # ── Step 10: Smoke test temp EC2 ──────────────────────────────────
       - name: Smoke test temp EC2
         run: |
           TEMP_EC2_IP="${{ steps.get-ip.outputs.TEMP_EC2_IP }}"
           chmod +x deploy/smoke-test.sh
           ./deploy/smoke-test.sh "http://$TEMP_EC2_IP:5173"
 
-      # ── Step 19: Terminate temp EC2 (always) ─────────────────────────
       - name: Terminate temp EC2
         if: always()
         run: |
