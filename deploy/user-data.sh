@@ -1,12 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-exec > /var/log/user-data.log 2>&1
-
 echo "=== user-data bootstrap started at $(date) ==="
 
 # Trap to log failure point (helps debug when cloud-init reports scripts-user failed)
-trap 'echo "FAILED at line $LINENO: $BASH_COMMAND"; exit 1' ERR
+trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
 
 # Install dependencies first (AL2023 minimal has curl-minimal, but we need docker, git, and full curl)
 # This also validates network - dnf will fail clearly if no internet
