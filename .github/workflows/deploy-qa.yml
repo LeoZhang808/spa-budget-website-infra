@@ -218,7 +218,7 @@ jobs:
       # ── Step 15: SCP deploy files to QA EC2 ────────────────────────────────
       - name: SCP deploy files to QA EC2
         run: |
-          scp ${{ env.SSH_OPTS }} -r deploy/ ${{ secrets.EC2_SSH_USER }}@${{ secrets.QA_EC2_HOST }}:/tmp/deploy/
+          scp ${{ env.SSH_OPTS }} -r deploy/ ${{ secrets.EC2_SSH_USER }}@${{ secrets.QA_EC2_HOST }}:/tmp/
 
       # ── Step 16: Deploy to QA EC2 ────────────────────────────────────────
       - name: Deploy to QA EC2
