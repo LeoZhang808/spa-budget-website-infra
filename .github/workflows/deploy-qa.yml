@@ -241,7 +241,7 @@ jobs:
       # ── Step 18: Smoke test QA EC2 ───────────────────────────────────────
       - name: Smoke test QA EC2
         run: |
-          ./deploy/smoke-test.sh "http://${{ secrets.QA_EC2_HOST }}"
+          ./deploy/smoke-test.sh "http://${{ secrets.QA_EC2_HOST }}:5173"
 
       - name: Terminate temp EC2
         if: always()
