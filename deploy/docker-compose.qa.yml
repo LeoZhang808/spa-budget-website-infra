@@ -1,0 +1,17 @@
+# QA runtime: ECR images, no local DB. RDS via DATABASE_URL in /opt/app/.env
+# ECR_REGISTRY and IMAGE_TAG are exported by deploy-qa.sh before running
+
+services:
+  frontend:
+    image: ${ECR_REGISTRY}/budget-app-frontend:${IMAGE_TAG}
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+  backend:
+    image: ${ECR_REGISTRY}/budget-app-backend:${IMAGE_TAG}
+    env_file:
+      - /opt/app/.env
+    ports:
+      - "4000:4000"
