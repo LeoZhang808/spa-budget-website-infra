@@ -8,8 +8,8 @@ trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" >&2; exit 1' ERR
 
 # Install dependencies (AL2023 minimal already has curl-minimal; curl and curl-minimal conflict)
 # This also validates network - dnf will fail clearly if no internet
-echo "Installing docker, git..."
-dnf install -y docker git
+echo "Installing docker, git, nginx..."
+dnf install -y docker git nginx
 
 # Verify GitHub reachability (needed for git clone in deploy workflow)
 echo "Checking GitHub reachability..."
@@ -35,6 +35,9 @@ fi
 
 systemctl enable docker
 systemctl start docker
+
+systemctl enable nginx
+systemctl start nginx
 
 touch /tmp/user-data-complete
 
