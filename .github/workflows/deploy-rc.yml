@@ -1,0 +1,105 @@
+# Deploy RC (Release Candidate) to pre-allocated RC EC2
+# Triggered by: repository_dispatch (from source repo after Semantic Release) or workflow_dispatch (manual)
+# Image tag: RC label (e.g. 1.0.0-rc1) — NOT UUID. Source repo builds and pushes to ECR.
+
+name: Deploy RC
+
+on:
+  repository_dispatch:
+    types: [rc-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "RC version (e.g. 1.0.0-rc1)"
+        required: true
+
+env:
+  SSH_OPTS: "-o StrictHostKeyChecking=no -i /tmp/ec2_key.pem"
+
+jobs:
+  deploy-rc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            IMAGE_TAG="${{ github.event.client_payload.version }}"
+          else
+            IMAGE_TAG="${{ github.event.inputs.version }}"
+          fi
+          # Normalize: strip leading 'v' if present (v1.0.0-rc1 -> 1.0.0-rc1)
+          IMAGE_TAG="${IMAGE_TAG#v}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying RC image tag: $IMAGE_TAG"
+
+      - name: Validate required secrets
+        run: |
+          MISSING=""
+          for SECRET_NAME in \
+            AWS_ACCESS_KEY_ID \
+            AWS_SECRET_ACCESS_KEY \
+            AWS_SESSION_TOKEN \
+            AWS_REGION \
+            AWS_ACCOUNT_ID \
+            RC_EC2_HOST \
+            EC2_SSH_KEY \
+            EC2_SSH_USER; do
+            eval VALUE="\$$SECRET_NAME"
+            if [ -z "$VALUE" ]; then
+              MISSING="$MISSING $SECRET_NAME"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Missing required secrets:$MISSING"
+            exit 1
+          fi
+          echo "All required secrets are present."
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          RC_EC2_HOST: ${{ secrets.RC_EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_SSH_USER: ${{ secrets.EC2_SSH_USER }}
+
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/ec2_key.pem
+          chmod 600 /tmp/ec2_key.pem
+
+      - name: SCP deploy files to RC EC2
+        run: |
+          scp ${{ env.SSH_OPTS }} -r deploy/ ${{ secrets.EC2_SSH_USER }}@${{ secrets.RC_EC2_HOST }}:/tmp/
+
+      - name: Deploy to RC EC2
+        run: |
+          IMAGE_TAG="${{ steps.tag.outputs.IMAGE_TAG }}"
+          ssh ${{ env.SSH_OPTS }} ${{ secrets.EC2_SSH_USER }}@${{ secrets.RC_EC2_HOST }} "
+            export AWS_ACCESS_KEY_ID='${{ secrets.AWS_ACCESS_KEY_ID }}' \
+                   AWS_SECRET_ACCESS_KEY='${{ secrets.AWS_SECRET_ACCESS_KEY }}' \
+                   AWS_SESSION_TOKEN='${{ secrets.AWS_SESSION_TOKEN }}' \
+                   AWS_REGION='${{ secrets.AWS_REGION }}' \
+                   AWS_ACCOUNT_ID='${{ secrets.AWS_ACCOUNT_ID }}' \
+                   IMAGE_TAG='$IMAGE_TAG' && \
+            cd /tmp/deploy && chmod +x deploy-rc.sh && ./deploy-rc.sh
+          "
+
+      - name: Wait for RC startup
+        run: sleep 30
+
+      - name: Smoke test RC EC2
+        run: |
+          if [ -n "${{ secrets.RC_DOMAIN_URL }}" ]; then
+            RC_URL="${{ secrets.RC_DOMAIN_URL }}"
+          else
+            RC_URL="http://${{ secrets.RC_EC2_HOST }}:5173"
+          fi
+          ./deploy/smoke-test.sh "$RC_URL"
